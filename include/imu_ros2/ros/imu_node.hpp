@@ -42,6 +42,16 @@ private:
   int i2c_addr_;
   std::string frame_id_;
   int rate_hz_;
+  double gyro_scale_z_;
+  
+  // Auto calibration state
+  bool auto_calibrate_gyro_;
+  bool gyro_calibrated_;
+  int gyro_calib_samples_needed_;
+  int gyro_calib_samples_count_;
+  double gyro_calib_sum_x_;
+  double gyro_calib_sum_y_;
+  double gyro_calib_sum_z_;
   
   // ROS infrastructure
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;

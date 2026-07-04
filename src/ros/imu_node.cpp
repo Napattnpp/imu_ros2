@@ -7,9 +7,19 @@ namespace imu_ros2 {
 namespace ros_layer {
 
 ImuNode::ImuNode(const rclcpp::NodeOptions& options)
-  : Node("imu_node", options)
+  : Node("imu_node", options),
+    gyro_calibrated_(false),
+    gyro_calib_samples_needed_(200),
+    gyro_calib_samples_count_(0),
+    gyro_calib_sum_x_(0.0),
+    gyro_calib_sum_y_(0.0),
+    gyro_calib_sum_z_(0.0)
 {
   init_parameters();
+  
+  if (!auto_calibrate_gyro_) {
+    gyro_calibrated_ = true;
+  }
   
   // Pre-allocate messages
   imu_msg_.header.frame_id = frame_id_;
@@ -32,8 +42,8 @@ ImuNode::ImuNode(const rclcpp::NodeOptions& options)
     imu_msg_.angular_velocity_covariance[8] = gyro_cov[2];
   }
 
-  init_calibration();
   init_driver();
+  init_calibration();
 
   // Create publishers
   imu_pub_ = create_publisher<sensor_msgs::msg::Imu>("imu/data_raw", rclcpp::QoS(10));
@@ -63,6 +73,8 @@ void ImuNode::init_parameters()
   i2c_addr_ = declare_parameter<int>("i2c_addr", 0x68);
   frame_id_ = declare_parameter<std::string>("frame_id", "imu_link");
   rate_hz_ = declare_parameter<int>("rate_hz", 200);
+  gyro_scale_z_ = declare_parameter<double>("gyro_scale_z", 1.0);
+  auto_calibrate_gyro_ = declare_parameter<bool>("auto_calibrate_gyro", true);
 }
 
 void ImuNode::init_calibration()
@@ -132,19 +144,42 @@ void ImuNode::timer_callback()
 
   diagnostics_tracker_.record_read_success(raw_data.timestamp, raw_data.temperature);
 
+  // Auto gyroscope calibration on startup
+  if (auto_calibrate_gyro_ && !gyro_calibrated_) {
+    gyro_calib_sum_x_ += raw_data.gyro[0];
+    gyro_calib_sum_y_ += raw_data.gyro[1];
+    gyro_calib_sum_z_ += raw_data.gyro[2];
+    gyro_calib_samples_count_++;
+
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+      "Calibrating gyroscope bias... Keep robot still (%d/%d)", 
+      gyro_calib_samples_count_, gyro_calib_samples_needed_);
+
+    if (gyro_calib_samples_count_ >= gyro_calib_samples_needed_) {
+      double bias_x = gyro_calib_sum_x_ / gyro_calib_samples_needed_;
+      double bias_y = gyro_calib_sum_y_ / gyro_calib_samples_needed_;
+      double bias_z = gyro_calib_sum_z_ / gyro_calib_samples_needed_;
+      gyro_cal_.set_bias(bias_x, bias_y, bias_z);
+      gyro_calibrated_ = true;
+      RCLCPP_INFO(get_logger(), "Gyroscope calibration complete! Biases: X: %.5f, Y: %.5f, Z: %.5f", bias_x, bias_y, bias_z);
+    }
+    return;
+  }
+
   // Apply calibration
   gyro_cal_.apply(raw_data);
   accel_cal_.apply(raw_data);
   mag_cal_.apply(raw_data);
 
   // Map monotonic timestamp to ROS time (best effort mapping)
-  // For standard nodes, node->now() is generally sufficient.
-  rclcpp::Time ros_time = this->now();
+  auto steady_now = std::chrono::steady_clock::now();
+  auto time_offset = raw_data.timestamp - steady_now;
+  rclcpp::Time ros_time = this->now() + rclcpp::Duration(time_offset);
   
   imu_msg_.header.stamp = ros_time;
   imu_msg_.angular_velocity.x = raw_data.gyro[0];
   imu_msg_.angular_velocity.y = raw_data.gyro[1];
-  imu_msg_.angular_velocity.z = raw_data.gyro[2];
+  imu_msg_.angular_velocity.z = raw_data.gyro[2] * gyro_scale_z_;
   
   imu_msg_.linear_acceleration.x = raw_data.accel[0];
   imu_msg_.linear_acceleration.y = raw_data.accel[1];
