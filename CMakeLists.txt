@@ -32,6 +32,7 @@ target_include_directories(imu_core PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 # Intentionally NOT linking any ROS libraries here to enforce separation
+set_target_properties(imu_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # ------------------------------------------------------------------
 # ROS Application Layer
